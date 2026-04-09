@@ -1,0 +1,11 @@
+node_modules/
+agenttree.egg-info/
+dist/
+build/
+.agenttree-data/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.DS_Store
+.pytest_cache/

@@ -1,0 +1,151 @@
+# AgentTree
+
+AgentTree 是一个树状结构的多 Agent 运行时，包含以下角色：
+
+- Core: 负责节点注册、事件路由、进程监管、知识库同步。
+- Agent: 基于 LangChain `create_agent` 的 ReAct Agent 子进程。
+- Executor: 绑定到 Agent 的独立执行器进程，既可被调用，也可主动回推事件。
+- Supervisor: 面向人类的高权限入口，不走普通事件队列。
+
+## 当前实现范围
+
+当前仓库提供首版可运行骨架，覆盖：
+
+- 树形节点注册与父子关系维护
+- 五级优先级事件 Broker
+- FastAPI Core 服务与 WebSocket runtime 协议
+- LangChain Agent 运行时封装
+- 外部 Executor 注册、绑定、RPC 与事件回推
+- Markdown 文件镜像 + nano-vectordb 分层知识库
+- Demo 启动脚本和基础测试
+
+## 快速开始
+
+1. 安装依赖。
+
+```bash
+pip install -e .[dev]
+```
+
+2. 配置模型接口。
+
+启动 Core 后，直接调用接口写入模型配置，配置会保存到本地状态目录，不依赖环境变量。
+
+```bash
+curl -X PUT http://127.0.0.1:18990/api/model-config ^
+	-H "Content-Type: application/json" ^
+	-d "{\"model\":\"deepseek-chat\",\"openai_api_key\":\"your-key\",\"openai_base_url\":\"https://api.deepseek.com\",\"model_temperature\":0.0}"
+```
+
+读取当前配置：
+
+```bash
+curl http://127.0.0.1:18990/api/model-config
+```
+
+3. 启动 Demo。
+
+```bash
+python -m demo.run_demo
+```
+
+也可以在启动 Demo 时直接把模型配置写入 `/api/model-config`：
+
+```bash
+python -m demo.run_demo --model deepseek-chat --api-key your-key --base-url https://api.deepseek.com --temperature 0.0
+```
+
+如果你没有传这些参数，而本地也还没配置模型，Demo 会在终端里提示输入，然后自动调用配置接口。
+
+Demo 运行时会实时打印：
+
+- Agent 和 Executor 的注册、上线、下线
+- 树结构变化
+- 事件投递与回复
+- Agent 的思考摘要与最终输出
+- 工具调用与知识库更新的结构化 trace
+
+## Executor 新模型
+
+Executor 不再由 Agent 或 Core 在树内直接创建并拉起进程，而是采用“两阶段模型”：
+
+1. 先单独启动一个外部 Executor 程序，例如：
+
+```bash
+python -m demo.temp_exe --path /temperature.executor
+```
+
+2. 该程序启动后会通过网络调用 `/api/executors/register` 完成注册。
+3. Core 会向根层 Agent 发送结构事件，通知有新的外部 Executor 可用。
+4. 根层 Agent 再通过 `/api/executors/bind`，把这个 Executor 绑定到某个节点。
+
+绑定后，Executor 会收到 `executor_bound` 结构事件，并开始把周期事件和执行结果发送给绑定节点。
+
+说明：这里的“思考”是 Agent 返回的简短处理摘要，不是完整隐藏推理链。
+
+4. 单独启动 Core。
+
+```bash
+python -m agenttree.core.main
+```
+
+5. 启动可视化控制台前端。
+
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+默认地址是 `http://127.0.0.1:5173`，开发模式会代理 Core 的 `/api` 和 `/ws`。
+
+如果你希望由 FastAPI 直接托管前端构建产物：
+
+```bash
+cd ui
+npm install
+npm run build
+```
+
+构建完成后重新启动 Core，即可通过 `/dashboard` 打开内置网页面板。
+
+如果你想单独接观察器，可以连接 WebSocket `ws://127.0.0.1:18990/ws/observe`，或访问 `/api/traces` 获取最近轨迹。
+
+当前控制台面板已覆盖：
+
+- Agent 树结构与执行器状态
+- 实时思考摘要、工具调用、事件流向时间线
+- 知识库文档列表、全文查看与检索
+- 向 Supervisor 直接下达文本命令
+
+## 目录
+
+- agenttree/core: Core 服务、Broker、Registry、子进程监管
+- agenttree/agent_runtime: Agent 子进程与工具
+- agenttree/executor_runtime: Executor 子进程与 RPC
+- agenttree/executors: 可直接命令行启动的外部执行器实现
+- agenttree/knowledge: 分层知识库
+- demo: Demo 编排
+- tests: 单元测试
+
+## 外部执行器
+
+新的执行器位于 `agenttree/executors/`，通过命令行读取 Core 地址与自身挂载路径。
+
+MQTT 执行器：
+
+```bash
+python -m agenttree.executors.mqtt --core localhost:10000 --mqtt-broker example.com:1883 --mqtt-user user --mqtt-pwd password --path /supervisor/mqtt.executor
+```
+
+系统命令执行器：
+
+```bash
+python -m agenttree.executors.command --core localhost:10000 --path /supervisor/command.executor --working-dir D:/ALLEN
+```
+
+文件系统执行器：
+
+```bash
+python -m agenttree.executors.filesystem --core localhost:10000 --path /supervisor/files.executor --root-dir D:/ALLEN
+```

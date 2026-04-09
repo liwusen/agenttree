@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agenttree"
+version = "0.1.0"
+description = "Tree-structured multi-agent runtime with a FastAPI core, LangChain agents, and event-driven executors."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "httpx>=0.28.0",
+    "websockets>=14.0",
+    "textual>=0.79.1",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "langchain>=1.0.0",
+    "langchain-openai>=0.3.0",
+    "nano-vectordb>=0.0.4.3",
+    "numpy>=1.26.0",
+    "paho-mqtt>=2.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[project.scripts]
+agenttree-core = "agenttree.core.main:main"
+agenttree-agent = "agenttree.agent_runtime.main:main"
+agenttree-executor = "agenttree.executor_runtime.main:main"
+agenttree-cli = "agenttree.cli.main:main"
+agenttree-demo = "demo.run_demo:main"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agenttree*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
