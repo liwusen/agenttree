@@ -29,6 +29,59 @@ def build_settings_for_core(core: str) -> AgentTreeSettings:
     return settings
 
 
+def operation_field(
+    name: str,
+    *,
+    field_type: str,
+    description: str,
+    required: bool,
+    default: Any | None = None,
+) -> dict[str, Any]:
+    field = {
+        "name": name,
+        "type": field_type,
+        "description": description,
+        "required": required,
+    }
+    if default is not None:
+        field["default"] = default
+    return field
+
+
+def operation_spec(
+    command: str,
+    *,
+    summary: str,
+    description: str,
+    payload_schema: list[dict[str, Any]],
+    returns: list[dict[str, Any]],
+    aliases: list[str] | None = None,
+    examples: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "command": command,
+        "summary": summary,
+        "description": description,
+        "aliases": list(aliases or []),
+        "payload_schema": payload_schema,
+        "returns": returns,
+        "examples": list(examples or []),
+    }
+
+
+def default_executor_usage_guide() -> dict[str, Any]:
+    return {
+        "invoke_tool": "invoke_executor(executor_path, command, payload_json)",
+        "guidelines": [
+            "在调用执行器前，先读取节点详情或执行器指南，确认支持的 command、参数和返回字段。",
+            "command 应优先使用 operations 中定义的 canonical command，不要依赖别名。",
+            "payload_json 必须是 JSON 对象字符串，并且字段名称、类型和必填项要与 payload_schema 一致。",
+            "如果执行器操作是异步型，返回值通常只表示任务已提交，最终结果要等待 event 或 response 事件。",
+            "如果参数不完整、类型错误或路径越权，执行器会返回 handled=false 或错误摘要。",
+        ],
+    }
+
+
 class ExternalExecutorBase(ABC):
     def __init__(
         self,
@@ -39,13 +92,18 @@ class ExternalExecutorBase(ABC):
         description: str = "",
         capabilities: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
+        operations: list[dict[str, Any]] | None = None,
     ) -> None:
         self.settings = settings
         self.path = path
         self.executor_kind = executor_kind
         self.description = description
         self.capabilities = list(capabilities or [])
+        self.operation_specs = list(operations or [])
         self.metadata = dict(metadata or {})
+        self.metadata.setdefault("executor_usage", default_executor_usage_guide())
+        if self.operation_specs:
+            self.metadata["operations"] = self.operation_specs
         self.client = RuntimeClient(settings)
         self.owner_path: str | None = None
         self.websocket = None
@@ -183,6 +241,7 @@ class ExternalExecutorBase(ABC):
             "path": self.path,
             "owner_path": self.owner_path,
             "capabilities": self.capabilities,
+            "operations": self.operation_specs,
         }
 
     async def on_started(self) -> None:

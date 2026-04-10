@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from agenttree.executors.base import ExternalExecutorBase, build_settings_for_core
+from agenttree.executors.base import ExternalExecutorBase, build_settings_for_core, operation_field, operation_spec
 from agenttree.schemas.events import EventEnvelope, EventKind
 
 
@@ -34,6 +34,58 @@ class SystemCommandExecutor(ExternalExecutorBase):
             description="Execute system commands through subprocess with concurrent jobs and IO capture.",
             capabilities=["event_push", "run_command", "terminate_command", "command_status"],
             metadata={"working_dir": self.working_dir},
+            operations=[
+                operation_spec(
+                    "run_command",
+                    summary="异步启动一个或多个系统命令。",
+                    description="适用于需要执行 shell 命令、脚本或程序的场景。返回通常表示任务已启动，最终 stdout/stderr 和结束状态会通过事件回推。",
+                    aliases=["run", "exec", "execute"],
+                    payload_schema=[
+                        operation_field("shell_command", field_type="string", description="单条 shell 命令。与 commands 二选一。", required=False),
+                        operation_field("commands", field_type="array[string]", description="批量执行的命令列表。与 shell_command 二选一。", required=False),
+                        operation_field("cwd", field_type="string", description="命令执行目录，默认使用执行器 working_dir。", required=False),
+                    ],
+                    returns=[
+                        operation_field("handled", field_type="boolean", description="是否成功接受调用。", required=True),
+                        operation_field("summary", field_type="string", description="对执行结果的简要说明。", required=True),
+                        operation_field("jobs", field_type="array[object]", description="已启动任务列表，包含 job_id、command、cwd。", required=False),
+                    ],
+                    examples=[
+                        {
+                            "command": "run_command",
+                            "payload": {"shell_command": "python --version"},
+                        }
+                    ],
+                ),
+                operation_spec(
+                    "command_status",
+                    summary="查询命令任务状态。",
+                    description="用于轮询某个 job_id 或查看全部命令任务当前状态。",
+                    aliases=["status"],
+                    payload_schema=[
+                        operation_field("job_id", field_type="string", description="要查询的任务 ID；省略时返回全部任务。", required=False),
+                    ],
+                    returns=[
+                        operation_field("handled", field_type="boolean", description="是否成功处理查询。", required=True),
+                        operation_field("job", field_type="object", description="单个任务详情。", required=False),
+                        operation_field("jobs", field_type="array[object]", description="全部任务详情列表。", required=False),
+                    ],
+                ),
+                operation_spec(
+                    "terminate",
+                    summary="终止一个正在运行的命令任务。",
+                    description="用于停止指定 job_id 的系统命令任务。",
+                    aliases=["kill", "stop", "terminate_command"],
+                    payload_schema=[
+                        operation_field("job_id", field_type="string", description="要终止的任务 ID。", required=True),
+                    ],
+                    returns=[
+                        operation_field("handled", field_type="boolean", description="是否成功终止。", required=True),
+                        operation_field("job", field_type="object", description="终止后的任务状态详情。", required=False),
+                        operation_field("summary", field_type="string", description="终止结果摘要。", required=False),
+                    ],
+                ),
+            ],
         )
 
     async def handle_event(self, event: EventEnvelope) -> None:

@@ -41,7 +41,7 @@ def build_executor_tools(settings: AgentTreeSettings, self_path: str, trace_hook
         )
 
     async def invoke_executor(executor_path: str, command: str, payload_json: str = "{}") -> str:
-        """Invoke an executor with a command and optional JSON payload."""
+        """Invoke an executor with a command and optional JSON payload. Prefer reading get_executor_guide first."""
         payload = parse_json_object(payload_json)
 
         async def action() -> str:
@@ -65,6 +65,34 @@ def build_executor_tools(settings: AgentTreeSettings, self_path: str, trace_hook
             trace_hook=trace_hook,
         )
 
+    async def get_executor_guide(executor_path: str) -> str:
+        """Get a structured executor usage guide including supported commands, parameters, returns, and examples."""
+        normalized_path = executor_path.strip("/")
+
+        async def action() -> str:
+            async with httpx.AsyncClient(base_url=settings.base_url, timeout=30.0) as client:
+                response = await client.get(f"{settings.api_prefix}/nodes/{normalized_path}")
+                response.raise_for_status()
+                payload = response.json().get("node", {})
+                metadata = payload.get("metadata", {}) if isinstance(payload, dict) else {}
+                guide = {
+                    "path": payload.get("path"),
+                    "kind": payload.get("kind"),
+                    "description": payload.get("description"),
+                    "executor_kind": metadata.get("executor_kind"),
+                    "capabilities": payload.get("capabilities", []),
+                    "usage": metadata.get("executor_usage", {}),
+                    "operations": metadata.get("operations", []),
+                }
+                return json.dumps(guide, ensure_ascii=False)
+
+        return await run_tool_action(
+            tool_name="get_executor_guide",
+            args={"executor_path": executor_path},
+            action=action,
+            trace_hook=trace_hook,
+        )
+
     async def transfer_executor(executor_path: str, new_owner_path: str) -> str:
         """Transfer an executor to a new owner node path."""
         async def action() -> str:
@@ -83,4 +111,4 @@ def build_executor_tools(settings: AgentTreeSettings, self_path: str, trace_hook
             trace_hook=trace_hook,
         )
 
-    return [bind_executor, invoke_executor, transfer_executor]
+    return [bind_executor, invoke_executor, get_executor_guide, transfer_executor]

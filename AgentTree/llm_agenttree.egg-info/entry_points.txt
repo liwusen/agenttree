@@ -1,0 +1,6 @@
+[console_scripts]
+agenttree-agent = agenttree.agent_runtime.main:main
+agenttree-cli = agenttree.cli.main:main
+agenttree-core = agenttree.core.main:main
+agenttree-demo = demo.run_demo:main
+agenttree-executor = agenttree.executor_runtime.main:main

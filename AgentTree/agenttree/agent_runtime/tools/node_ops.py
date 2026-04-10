@@ -17,6 +17,71 @@ def build_node_tools(settings: AgentTreeSettings, self_path: str, trace_hook: To
             return {}
         return value if isinstance(value, dict) else {}
 
+    def format_tree_snapshot(payload: dict) -> str:
+        nodes = payload.get("nodes", []) if isinstance(payload, dict) else []
+        children = payload.get("children", {}) if isinstance(payload, dict) else {}
+        channels = payload.get("channels", []) if isinstance(payload, dict) else []
+        if not isinstance(nodes, list):
+            nodes = []
+        if not isinstance(children, dict):
+            children = {}
+        if not isinstance(channels, list):
+            channels = []
+
+        node_map = {
+            str(item.get("path")): item
+            for item in nodes
+            if isinstance(item, dict) and item.get("path")
+        }
+
+        def render_node(path: str, indent: int = 0) -> list[str]:
+            node = node_map.get(path, {"path": path, "kind": "unknown", "status": "unknown"})
+            metadata = node.get("metadata", {}) if isinstance(node.get("metadata"), dict) else {}
+            label = f"{'  ' * indent}- {path} [{node.get('kind', 'unknown')} | {node.get('status', 'unknown')}]"
+            extras: list[str] = []
+            if node.get("owner_path"):
+                extras.append(f"owner={node['owner_path']}")
+            if metadata.get("executor_kind"):
+                extras.append(f"executor_kind={metadata['executor_kind']}")
+            if node.get("description"):
+                extras.append(f"description={str(node['description']).strip()}")
+            if extras:
+                label += " " + " | ".join(extras)
+            lines = [label]
+            for child_path in children.get(path, []):
+                lines.extend(render_node(str(child_path), indent + 1))
+            return lines
+
+        tree_lines = ["Tree:"]
+        tree_lines.extend(render_node("/"))
+
+        executor_lines = ["Executors:"]
+        executor_nodes = [item for item in nodes if isinstance(item, dict) and item.get("kind") == "executor"]
+        if executor_nodes:
+            for item in sorted(executor_nodes, key=lambda value: str(value.get("path", ""))):
+                metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
+                owner = item.get("owner_path") or "unbound"
+                executor_kind = metadata.get("executor_kind", "unknown")
+                capabilities = ", ".join(item.get("capabilities", [])) if isinstance(item.get("capabilities"), list) else ""
+                line = f"- {item.get('path')} -> owner={owner} | kind={executor_kind}"
+                if capabilities:
+                    line += f" | capabilities={capabilities}"
+                executor_lines.append(line)
+        else:
+            executor_lines.append("- none")
+
+        channel_lines = ["Channels:"]
+        if channels:
+            for channel in channels:
+                if not isinstance(channel, dict):
+                    continue
+                members = ", ".join(channel.get("members", [])) if isinstance(channel.get("members"), list) else ""
+                channel_lines.append(f"- {channel.get('channel_id')}: {members or 'no members'}")
+        else:
+            channel_lines.append("- none")
+
+        return "\n".join(tree_lines + [""] + executor_lines + [""] + channel_lines)
+
     async def create_child_agent(name: str, prompt: str, description: str = "") -> str:
         """Create a child agent under the current node with a prompt and optional description."""
         async def action() -> str:
@@ -239,7 +304,7 @@ def build_node_tools(settings: AgentTreeSettings, self_path: str, trace_hook: To
             async with httpx.AsyncClient(base_url=settings.base_url, timeout=30.0) as client:
                 response = await client.get(f"{settings.api_prefix}/tree")
                 response.raise_for_status()
-                return response.text
+                return format_tree_snapshot(response.json())
 
         return await run_tool_action(
             tool_name="get_tree_structure",

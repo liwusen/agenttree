@@ -6,7 +6,7 @@ from typing import Any
 
 from paho.mqtt import client as mqtt_client
 
-from agenttree.executors.base import ExternalExecutorBase, build_settings_for_core
+from agenttree.executors.base import ExternalExecutorBase, build_settings_for_core, operation_field, operation_spec
 from agenttree.schemas.events import EventEnvelope, EventKind
 
 
@@ -38,6 +38,70 @@ class MQTTClientExecutor(ExternalExecutorBase):
             description="MQTT client executor for subscribe/publish workflows.",
             capabilities=["event_push", "mqtt_subscribe", "mqtt_unsubscribe", "mqtt_publish", "mqtt_status"],
             metadata={"mqtt_host": self.mqtt_host, "mqtt_port": self.mqtt_port},
+            operations=[
+                operation_spec(
+                    "mqtt_subscribe",
+                    summary="订阅 MQTT Topic。",
+                    description="建立对某个 topic 的订阅，后续消息会作为 event 回推给 owner 节点。",
+                    aliases=["subscribe"],
+                    payload_schema=[
+                        operation_field("topic", field_type="string", description="要订阅的 MQTT topic。", required=True),
+                        operation_field("qos", field_type="integer", description="QoS 等级，默认 0。", required=False, default=0),
+                    ],
+                    returns=[
+                        operation_field("handled", field_type="boolean", description="是否订阅成功。", required=True),
+                        operation_field("summary", field_type="string", description="结果摘要。", required=True),
+                        operation_field("subscriptions", field_type="object", description="当前订阅 topic 到 qos 的映射。", required=True),
+                    ],
+                ),
+                operation_spec(
+                    "mqtt_unsubscribe",
+                    summary="取消订阅 MQTT Topic。",
+                    description="停止订阅某个 topic。",
+                    aliases=["unsubscribe"],
+                    payload_schema=[
+                        operation_field("topic", field_type="string", description="要取消订阅的 MQTT topic。", required=True),
+                    ],
+                    returns=[
+                        operation_field("handled", field_type="boolean", description="是否取消成功。", required=True),
+                        operation_field("summary", field_type="string", description="结果摘要。", required=True),
+                        operation_field("subscriptions", field_type="object", description="当前剩余订阅映射。", required=True),
+                    ],
+                ),
+                operation_spec(
+                    "mqtt_publish",
+                    summary="向 MQTT Topic 发布消息。",
+                    description="把字符串消息发往指定 topic。适合向外部设备或服务发送控制命令。",
+                    aliases=["publish"],
+                    payload_schema=[
+                        operation_field("topic", field_type="string", description="目标 MQTT topic。", required=True),
+                        operation_field("message", field_type="string", description="要发布的字符串消息。", required=False),
+                        operation_field("payload", field_type="string", description="message 的别名字段。", required=False),
+                        operation_field("qos", field_type="integer", description="QoS 等级，默认 0。", required=False, default=0),
+                        operation_field("retain", field_type="boolean", description="是否 retain，默认 false。", required=False, default=False),
+                    ],
+                    returns=[
+                        operation_field("handled", field_type="boolean", description="是否发布请求成功提交。", required=True),
+                        operation_field("summary", field_type="string", description="结果摘要。", required=True),
+                        operation_field("mid", field_type="integer", description="MQTT publish message id。", required=False),
+                        operation_field("topic", field_type="string", description="发布目标 topic。", required=False),
+                    ],
+                ),
+                operation_spec(
+                    "mqtt_status",
+                    summary="查询 MQTT 执行器状态。",
+                    description="返回 broker 地址、client_id、当前 owner 和订阅列表。",
+                    aliases=["status"],
+                    payload_schema=[],
+                    returns=[
+                        operation_field("handled", field_type="boolean", description="是否查询成功。", required=True),
+                        operation_field("mqtt_host", field_type="string", description="MQTT broker 主机。", required=True),
+                        operation_field("mqtt_port", field_type="integer", description="MQTT broker 端口。", required=True),
+                        operation_field("client_id", field_type="string", description="当前 MQTT client id。", required=True),
+                        operation_field("subscriptions", field_type="object", description="当前订阅映射。", required=True),
+                    ],
+                ),
+            ],
         )
 
     async def on_started(self) -> None:

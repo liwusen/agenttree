@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from agenttree.executors.base import ExternalExecutorBase, build_settings_for_core
+from agenttree.executors.base import ExternalExecutorBase, build_settings_for_core, operation_field, operation_spec
 from agenttree.schemas.events import EventEnvelope
 
 
@@ -19,6 +19,113 @@ class FileSystemExecutor(ExternalExecutorBase):
             description="Read and modify system files with optional root directory restriction.",
             capabilities=["event_push", "read_file", "write_file", "append_file", "list_dir", "delete_path", "make_dir", "stat_path"],
             metadata={"root_dir": str(self.root_dir) if self.root_dir else None},
+            operations=[
+                operation_spec(
+                    "read_file",
+                    summary="读取文件内容。",
+                    description="读取指定路径文件的文本内容。适用于配置、日志、脚本或知识文本读取。",
+                    payload_schema=[
+                        operation_field("path", field_type="string", description="要读取的文件路径。相对路径会基于 root_dir 或当前工作目录解析。", required=True),
+                        operation_field("encoding", field_type="string", description="文本编码，默认 utf-8。", required=False, default="utf-8"),
+                    ],
+                    returns=[
+                        operation_field("handled", field_type="boolean", description="是否读取成功。", required=True),
+                        operation_field("path", field_type="string", description="解析后的真实路径。", required=True),
+                        operation_field("text", field_type="string", description="文件内容。", required=False),
+                        operation_field("summary", field_type="string", description="结果摘要。", required=True),
+                    ],
+                ),
+                operation_spec(
+                    "write_file",
+                    summary="覆盖写入文件。",
+                    description="将 content 写入目标文件；如果文件不存在会自动创建。",
+                    payload_schema=[
+                        operation_field("path", field_type="string", description="目标文件路径。", required=True),
+                        operation_field("content", field_type="string", description="要写入的文本内容。", required=True),
+                        operation_field("encoding", field_type="string", description="文本编码，默认 utf-8。", required=False, default="utf-8"),
+                    ],
+                    returns=[
+                        operation_field("handled", field_type="boolean", description="是否写入成功。", required=True),
+                        operation_field("path", field_type="string", description="解析后的真实路径。", required=True),
+                        operation_field("bytes_written", field_type="integer", description="写入字节数。", required=True),
+                        operation_field("summary", field_type="string", description="结果摘要。", required=True),
+                    ],
+                ),
+                operation_spec(
+                    "append_file",
+                    summary="向文件追加文本。",
+                    description="将 content 追加到目标文件尾部；如果文件不存在会自动创建。",
+                    payload_schema=[
+                        operation_field("path", field_type="string", description="目标文件路径。", required=True),
+                        operation_field("content", field_type="string", description="要追加的文本内容。", required=True),
+                        operation_field("encoding", field_type="string", description="文本编码，默认 utf-8。", required=False, default="utf-8"),
+                    ],
+                    returns=[
+                        operation_field("handled", field_type="boolean", description="是否追加成功。", required=True),
+                        operation_field("path", field_type="string", description="解析后的真实路径。", required=True),
+                        operation_field("bytes_written", field_type="integer", description="追加写入字节数。", required=True),
+                        operation_field("summary", field_type="string", description="结果摘要。", required=True),
+                    ],
+                ),
+                operation_spec(
+                    "list_dir",
+                    summary="列出目录内容。",
+                    description="返回目录下的文件和子目录列表。",
+                    payload_schema=[
+                        operation_field("path", field_type="string", description="目录路径，默认当前目录。", required=False, default="."),
+                    ],
+                    returns=[
+                        operation_field("handled", field_type="boolean", description="是否查询成功。", required=True),
+                        operation_field("entries", field_type="array[object]", description="目录项列表，每项包含 name/path/is_dir。", required=True),
+                        operation_field("summary", field_type="string", description="结果摘要。", required=True),
+                    ],
+                ),
+                operation_spec(
+                    "make_dir",
+                    summary="创建目录。",
+                    description="创建目标目录，可递归创建父目录。",
+                    payload_schema=[
+                        operation_field("path", field_type="string", description="目录路径。", required=True),
+                        operation_field("parents", field_type="boolean", description="是否递归创建父目录，默认 true。", required=False, default=True),
+                        operation_field("exist_ok", field_type="boolean", description="目录已存在时是否忽略错误，默认 true。", required=False, default=True),
+                    ],
+                    returns=[
+                        operation_field("handled", field_type="boolean", description="是否创建成功。", required=True),
+                        operation_field("path", field_type="string", description="解析后的真实路径。", required=True),
+                        operation_field("summary", field_type="string", description="结果摘要。", required=True),
+                    ],
+                ),
+                operation_spec(
+                    "delete_path",
+                    summary="删除文件或目录。",
+                    description="删除指定文件；如果是目录且要递归删除，必须显式传 recursive=true。",
+                    payload_schema=[
+                        operation_field("path", field_type="string", description="要删除的文件或目录路径。", required=True),
+                        operation_field("recursive", field_type="boolean", description="删除目录时是否递归删除，默认 false。", required=False, default=False),
+                    ],
+                    returns=[
+                        operation_field("handled", field_type="boolean", description="是否删除成功。", required=True),
+                        operation_field("path", field_type="string", description="解析后的真实路径。", required=True),
+                        operation_field("summary", field_type="string", description="结果摘要。", required=True),
+                    ],
+                ),
+                operation_spec(
+                    "stat_path",
+                    summary="获取路径状态信息。",
+                    description="查询文件或目录是否存在、大小、类型等基础属性。",
+                    payload_schema=[
+                        operation_field("path", field_type="string", description="要查询的路径。", required=True),
+                    ],
+                    returns=[
+                        operation_field("handled", field_type="boolean", description="是否查询成功。", required=True),
+                        operation_field("exists", field_type="boolean", description="路径是否存在。", required=True),
+                        operation_field("is_dir", field_type="boolean", description="是否是目录。", required=True),
+                        operation_field("is_file", field_type="boolean", description="是否是文件。", required=True),
+                        operation_field("size", field_type="integer", description="文件大小字节数。", required=True),
+                        operation_field("summary", field_type="string", description="结果摘要。", required=True),
+                    ],
+                ),
+            ],
         )
 
     async def handle_event(self, event: EventEnvelope) -> None:

@@ -37,8 +37,11 @@
 安装
 
 ```shell
+cd AgentTree
 pip install llm-agenttree[dev]
 ```
+
+注意：不要在仓库根目录直接做 editable 安装；应始终进入 AgentTree 目录后再执行安装命令，否则可能残留错误的 agenttree editable 安装记录。
 
 启动核心服务
 

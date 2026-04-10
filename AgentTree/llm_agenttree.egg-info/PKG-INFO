@@ -1,3 +1,25 @@
+Metadata-Version: 2.4
+Name: llm-agenttree
+Version: 0.1.0
+Summary: Tree-structured multi-agent runtime with a FastAPI core, LangChain agents, and event-driven executors.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.32.0
+Requires-Dist: httpx>=0.28.0
+Requires-Dist: websockets>=14.0
+Requires-Dist: textual>=0.79.1
+Requires-Dist: pydantic>=2.10.0
+Requires-Dist: pydantic-settings>=2.7.0
+Requires-Dist: langchain>=1.0.0
+Requires-Dist: langchain-openai>=0.3.0
+Requires-Dist: nano-vectordb>=0.0.4.3
+Requires-Dist: numpy>=1.26.0
+Requires-Dist: paho-mqtt>=2.1.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"
+
 # AgentTree
 
 AgentTree 是一个树状结构的多 Agent 运行时，包含以下角色：

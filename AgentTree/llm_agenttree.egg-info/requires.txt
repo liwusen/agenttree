@@ -1,0 +1,16 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+httpx>=0.28.0
+websockets>=14.0
+textual>=0.79.1
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+langchain>=1.0.0
+langchain-openai>=0.3.0
+nano-vectordb>=0.0.4.3
+numpy>=1.26.0
+paho-mqtt>=2.1.0
+
+[dev]
+pytest>=8.3.0
+pytest-asyncio>=0.24.0

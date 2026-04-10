@@ -68,8 +68,8 @@ async def _bootstrap_system_knowledge_templates(state: CoreState) -> list[dict]:
     return injected
 
 
-def create_app() -> FastAPI:
-    settings = get_settings()
+def create_app(settings=None) -> FastAPI:
+    settings = settings or get_settings()
     state = build_core_state(settings)
     ui_dist = Path(__file__).resolve().parents[2] / "ui" / "dist"
 
