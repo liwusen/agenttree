@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-agenttree"
-version = "0.1.0"
+version = "0.2.0"
 description = "Tree-structured multi-agent runtime with a FastAPI core, LangChain agents, and event-driven executors."
 readme = "README.md"
 requires-python = ">=3.11"
