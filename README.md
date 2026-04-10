@@ -37,7 +37,7 @@
 安装
 
 ```shell
-pip install agenttree[dev]
+pip install llm-agenttree[dev]
 ```
 
 启动核心服务

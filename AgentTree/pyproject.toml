@@ -3,7 +3,7 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agenttree"
+name = "llm-agenttree"
 version = "0.1.0"
 description = "Tree-structured multi-agent runtime with a FastAPI core, LangChain agents, and event-driven executors."
 readme = "README.md"
