@@ -74,6 +74,9 @@ def build_node_tools(settings: AgentTreeSettings, self_path: str, trace_hook: To
                         "source_path": self_path,
                         "target_path": target_path,
                         "text": text,
+                        "require_reply": True,
+                        "message_purpose": "request",
+                        "dedupe_key": f"command:{self_path}:{target_path}:{text.strip()}",
                     },
                 )
                 response.raise_for_status()
@@ -97,6 +100,9 @@ def build_node_tools(settings: AgentTreeSettings, self_path: str, trace_hook: To
                         "source_path": self_path,
                         "target_path": target_path,
                         "text": text,
+                        "require_reply": False,
+                        "message_purpose": "info",
+                        "dedupe_key": f"message:{self_path}:{target_path}:{text.strip()}",
                     },
                 )
                 response.raise_for_status()

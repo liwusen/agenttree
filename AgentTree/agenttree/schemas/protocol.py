@@ -37,6 +37,7 @@ class RuntimeMessage(BaseModel):
     message_type: RuntimeMessageType
     path: str | None = None
     event: EventEnvelope | None = None
+    events: list[EventEnvelope] | None = None
     event_id: str | None = None
     rpc_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)

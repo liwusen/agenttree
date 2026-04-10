@@ -34,6 +34,7 @@ class AgentTreeSettings(BaseSettings):
     runtime_poll_interval_seconds: float = 1.0
     reconnect_delay_seconds: float = 2.0
     executor_rpc_timeout_seconds: float = 30.0
+    agent_event_batch_size: int = 4
 
     auto_start_supervisor: bool = True
     auto_inject_system_knowledge_templates: bool = True

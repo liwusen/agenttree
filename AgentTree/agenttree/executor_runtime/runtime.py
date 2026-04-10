@@ -7,7 +7,7 @@ import httpx
 
 from agenttree.agent_runtime.client import RuntimeClient
 from agenttree.config import AgentTreeSettings
-from agenttree.schemas.events import EventEnvelope, EventKind
+from agenttree.schemas.events import EventEnvelope, EventKind, EventMessagePurpose, build_event_metadata
 from agenttree.schemas.nodes import NodeKind
 from agenttree.schemas.protocol import RuntimeHello, RuntimeMessage, RuntimeMessageType
 
@@ -87,7 +87,12 @@ class ExecutorRuntime:
                 "input": event.payload,
                 "summary": f"executor processed payload {json.dumps(event.payload, ensure_ascii=False)}",
             },
-            metadata={"reply_to": event.event_id},
+            metadata=build_event_metadata(
+                metadata={"reply_to": event.event_id},
+                require_reply=False,
+                message_purpose=EventMessagePurpose.RESPONSE,
+                dedupe_key=f"executor-reply:{self.path}:{event.event_id}",
+            ),
         )
         await self.client.send(
             websocket,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,7 +19,7 @@ except ImportError:  # pragma: no cover - compatibility fallback for older langg
 from agenttree.agent_runtime.client import RuntimeClient
 from agenttree.agent_runtime.tools import build_executor_tools, build_knowledge_tools, build_node_tools
 from agenttree.config import AgentTreeSettings
-from agenttree.schemas.events import EventEnvelope, EventKind
+from agenttree.schemas.events import EventEnvelope, EventKind, EventMessagePurpose, build_event_metadata
 from agenttree.schemas.nodes import NodeKind
 from agenttree.schemas.protocol import RuntimeHello, RuntimeMessage, RuntimeMessageType
 
@@ -33,6 +34,7 @@ class AgentRuntime:
     agent: Any = field(init=False)
     checkpointer: Any = field(init=False)
     _active_event: EventEnvelope | None = field(init=False, default=None)
+    _active_events: list[EventEnvelope] = field(init=False, default_factory=list)
     _active_websocket: Any = field(init=False, default=None)
     _node_prompt: str | None = field(init=False, default=None)
     _node_description: str | None = field(init=False, default=None)
@@ -67,6 +69,7 @@ class AgentRuntime:
     def _system_prompt(self) -> str:
         if self.kind in {NodeKind.ROOT, NodeKind.SUPERVISOR} or self.path == "/supervisor":
             return self._root_system_prompt()
+        status_doc_path = self._agent_status_doc_path(self.path)
         base_prompt = (
             f"你是 AgentTree 节点 {self.path}。"
             "你运行在树状多 Agent 系统中。"
@@ -77,7 +80,12 @@ class AgentRuntime:
             "如果上级让你完成任务，请不要多次发送同样的回复确认你已收到命令了，除非你有新的信息需要补充。"
             "你拥有一定的自主权，可以完全自行处理职责范围内的问题。"
             "知识库文档 /core_index.md 非常重要，里面记录了系统结构、节点职责、工具使用说明等关键信息的索引。"
-            "对于大部分消息，你不需要确认收到"
+            f"你的状态文件固定为 {status_doc_path}。"
+            "你必须把自己的阶段性状态、最近进展、阻塞项、下一步动作优先写入这个状态文件，并持续覆盖更新。"
+            "非重要情况无需上报；如果没有新的关键信息、没有状态变化、没有阻塞、没有异常、没有决策请求，就不要发送消息。"
+            "管理者 Agent 应该优先从你的状态文件读取信息，因此你不要把普通状态轮询结果反复发成消息。"
+            "只有在以下情况才主动上报：异常、阻塞、关键状态变化、任务完成、需要上级决策。"
+            "对于大部分消息，你不需要确认收到。"
         )
         return self._merge_node_prompt(base_prompt)
 
@@ -111,6 +119,7 @@ class AgentRuntime:
             "5. 创建后立即向子 Agent 发送 command，交代当前任务。"
             "6. 必要时再为它绑定外部 Executor、创建频道、设置触发器。"
             "7. 记录这个子 Agent 的职责和状态到知识库，便于后续调度。"
+            "8. 管理子 Agent 时，优先读取其状态文件，而不是频繁发送确认型或轮询型消息。"
             "\n\n"
             "在告知子 Agent 时，至少提供以下信息："
             "- 任务目标与业务背景"
@@ -120,12 +129,14 @@ class AgentRuntime:
             "- 可使用的 Executor 或外部资源路径"
             "- 输出格式、优先级、完成标准"
             "- 是否需要持续监控、周期汇报或异常上报"
+            "- 它自己的状态文件路径，以及要求它把普通状态更新写入状态文件而非直接上报"
             "\n\n"
             "ROOT 节点尤其要擅长以下事件："
             "- human 下达的系统级命令"
             "- child_created、executor_registered、executor_bound 等结构事件"
             "- 需要拆分成多 Agent 协作的复杂任务"
             "- 需要把外部 Executor 纳入树状系统管理的任务"
+            "- 通过读取子节点状态文件来汇总信息，而不是制造大量冗余对话"
             "\n\n"
             "你必须优先使用工具进行显式操作，不要假设隐式系统能力。最终回复保持简洁，但结构决策要准确。"
             )
@@ -144,16 +155,157 @@ class AgentRuntime:
                 if message.message_type == RuntimeMessageType.WAKE:
                     await self.client.send(
                         websocket,
-                        RuntimeMessage(message_type=RuntimeMessageType.REQUEST_EVENT, path=self.path),
+                        RuntimeMessage(
+                            message_type=RuntimeMessageType.REQUEST_EVENT,
+                            path=self.path,
+                            payload={"batch_size": max(1, self.settings.agent_event_batch_size)},
+                        ),
                     )
                     continue
                 if message.message_type == RuntimeMessageType.EVENT:
-                    if message.event is None:
+                    events = message.events or ([] if message.event is None else [message.event])
+                    if not events:
                         continue
-                    await self.handle_event(websocket, message.event)
+                    if len(events) == 1:
+                        await self.handle_event(websocket, events[0])
+                    else:
+                        await self.handle_event_batch(websocket, events)
                     continue
         finally:
             heartbeat_task.cancel()
+
+    async def handle_event_batch(self, websocket, events: list[EventEnvelope]) -> None:
+        self._active_websocket = websocket
+        event_ids = [item.event_id for item in events]
+        queue_kind = events[0].kind.value if events else "unknown"
+        await self.log(
+            websocket,
+            "event_received",
+            f"received batch of {len(events)} {queue_kind} event(s)",
+            {
+                "events": [item.model_dump(mode="json") for item in events],
+                "event_count": len(events),
+                "event_ids": event_ids,
+                "queue_kind": queue_kind,
+                "trace_ids": [item.trace_id for item in events],
+            },
+        )
+        try:
+            try:
+                response_payload = await self.process_event_batch(events)
+            except Exception as exc:
+                await self.log(
+                    websocket,
+                    "runtime_error",
+                    f"failed to process {len(events)} batched event(s)",
+                    {
+                        "event_ids": event_ids,
+                        "queue_kind": queue_kind,
+                        "error": str(exc),
+                    },
+                )
+                response_payload = {
+                    "text": f"{self.path} 处理批量事件时出现错误: {exc}",
+                    "mode": "error",
+                    "thought_summary": "批量处理过程中调用后端服务或工具失败，已降级返回错误摘要。",
+                    "processed_event_ids": event_ids,
+                    "queue_kind": queue_kind,
+                    "event_results": [
+                        {
+                            "event_id": event.event_id,
+                            "thought_summary": "批量处理过程中调用后端服务或工具失败，已降级返回错误摘要。",
+                            "final_response": f"{self.path} 处理事件时出现错误: {exc}",
+                            "target_path": self._reply_target(event),
+                            "source_path": event.source_path,
+                            "kind": event.kind.value,
+                        }
+                        for event in events
+                    ],
+                }
+            await self.log(
+                websocket,
+                "thinking",
+                f"processed batch of {len(events)} {queue_kind} event(s)",
+                {
+                    "thought_summary": response_payload.get("thought_summary", ""),
+                    "text": response_payload.get("text", ""),
+                    "mode": response_payload.get("mode", ""),
+                    "event_count": len(events),
+                    "event_ids": event_ids,
+                    "queue_kind": queue_kind,
+                    "event_results": response_payload.get("event_results", []),
+                },
+            )
+            await self._publish_batch_replies(websocket, events, response_payload)
+            for event in events:
+                await self.client.send(
+                    websocket,
+                    RuntimeMessage(message_type=RuntimeMessageType.ACK_EVENT, path=self.path, event_id=event.event_id),
+                )
+        finally:
+            self._active_websocket = None
+
+    async def _publish_batch_replies(self, websocket, events: list[EventEnvelope], response_payload: dict[str, Any]) -> None:
+        event_results_by_id = {
+            str(item.get("event_id")): item
+            for item in response_payload.get("event_results", [])
+            if isinstance(item, dict) and item.get("event_id")
+        }
+        for index, event in enumerate(events):
+            target = self._reply_target(event)
+            if target is None:
+                continue
+            event_result = dict(event_results_by_id.get(event.event_id, {}))
+            outgoing_payload = {
+                "text": str(event_result.get("final_response", response_payload.get("text", ""))),
+                "mode": str(response_payload.get("mode", "llm")),
+                "thought_summary": str(event_result.get("thought_summary", response_payload.get("thought_summary", ""))),
+                "raw_output": response_payload.get("raw_output", ""),
+                "source_event_id": event.event_id,
+                "queue_kind": event.kind.value,
+                "event_result": {
+                    "event_id": event.event_id,
+                    "thought_summary": str(event_result.get("thought_summary", response_payload.get("thought_summary", ""))),
+                    "final_response": str(event_result.get("final_response", response_payload.get("text", ""))),
+                    "kind": event.kind.value,
+                    "source_path": event.source_path,
+                    "target_path": target,
+                    "result_index": index,
+                },
+                "batch_context": {
+                    "event_count": len(events),
+                    "processed_event_ids": [item.event_id for item in events],
+                    "batch_thought_summary": response_payload.get("thought_summary", ""),
+                    "batch_final_response": response_payload.get("text", ""),
+                },
+            }
+            outgoing = EventEnvelope(
+                kind=RuntimeEventMapper.reply_kind(event.kind),
+                source_path=self.path,
+                target_path=target,
+                payload=outgoing_payload,
+                trace_id=event.trace_id,
+                metadata=build_event_metadata(
+                    metadata={"reply_to": event.event_id, "reply_to_batch": [item.event_id for item in events]},
+                    require_reply=False,
+                    message_purpose=EventMessagePurpose.RESPONSE,
+                    dedupe_key=f"reply:{self.path}:{event.event_id}",
+                ),
+            )
+            await self.client.send(
+                websocket,
+                RuntimeMessage(
+                    message_type=RuntimeMessageType.PUBLISH_EVENT,
+                    path=self.path,
+                    event=outgoing,
+                ),
+            )
+            await self.log(
+                websocket,
+                "reply_sent",
+                f"sent structured reply for {event.event_id} to {target}",
+                {"reply": outgoing.model_dump(mode="json"), "event_id": event.event_id, "batch_event_ids": [item.event_id for item in events]},
+            )
 
     async def handle_event(self, websocket, event: EventEnvelope) -> None:
         self._active_websocket = websocket
@@ -203,7 +355,12 @@ class AgentRuntime:
                         target_path=target,
                         payload=response_payload,
                         trace_id=event.trace_id,
-                        metadata={"reply_to": event.event_id},
+                        metadata=build_event_metadata(
+                            metadata={"reply_to": event.event_id},
+                            require_reply=False,
+                            message_purpose=EventMessagePurpose.RESPONSE,
+                            dedupe_key=f"reply:{self.path}:{event.event_id}",
+                        ),
                     )
                     await self.client.send(
                         websocket,
@@ -257,7 +414,48 @@ class AgentRuntime:
             "raw_output": content,
         }
 
-    def _event_prompt(self, event: EventEnvelope) -> str:
+    async def process_event_batch(self, events: list[EventEnvelope]) -> dict[str, Any] | None:
+        await self._refresh_node_context()
+        if self.agent is None:
+            event_results = [self._build_fallback_event_result(event) for event in events]
+            text = "\n".join(item["final_response"] for item in event_results)
+            return {
+                "text": text,
+                "mode": "fallback",
+                "thought_summary": "未配置模型，使用规则回复。",
+                "processed_event_ids": [item.event_id for item in events],
+                "event_results": event_results,
+            }
+        prompt = self._event_prompt(events)
+        self._active_events = list(events)
+        self._active_event = events[0] if events else None
+        try:
+            result = await self.agent.ainvoke(
+                {"messages": [{"role": "user", "content": prompt}]},
+                config={"configurable": {"thread_id": self._thread_id_for_batch(events)}},
+            )
+        finally:
+            self._active_event = None
+            self._active_events = []
+        messages = result.get("messages", [])
+        content = ""
+        if messages:
+            content = str(messages[-1].content)
+        parsed = self._parse_batch_agent_response(content, events)
+        return {
+            "text": parsed["final_response"],
+            "mode": "llm",
+            "thought_summary": parsed["thought_summary"],
+            "raw_output": content,
+            "processed_event_ids": [item.event_id for item in events],
+            "queue_kind": events[0].kind.value if events else None,
+            "event_count": len(events),
+            "event_results": parsed["event_results"],
+        }
+
+    def _event_prompt(self, event: EventEnvelope | list[EventEnvelope]) -> str:
+        if isinstance(event, list):
+            return self._batch_event_prompt(event)
         return json.dumps(
             {
                 "instruction": (
@@ -282,6 +480,41 @@ class AgentRuntime:
             ensure_ascii=False,
         )
 
+    def _batch_event_prompt(self, events: list[EventEnvelope]) -> str:
+        queue_kind = events[0].kind if events else EventKind.EVENT
+        return json.dumps(
+            {
+                "instruction": (
+                    "处理这一批来自同一优先级队列的 AgentTree 事件。如果你需要使用工具，请先使用工具。"
+                    "最终请只输出一个 JSON 对象。"
+                    "顶层必须包含 thought_summary、final_response、event_results 三个字段。"
+                    "event_results 必须是数组，长度应与输入 events 一致，每个元素至少包含 event_id、thought_summary、final_response。"
+                    "你需要在 thought_summary 中概括这一批事件的整体处理思路，并在 final_response 中给出本轮统一结果。"
+                ),
+                "queue_name": queue_kind.value,
+                "queue_description": self._queue_description(queue_kind),
+                "event_count": len(events),
+                "event_ids": [item.event_id for item in events],
+                "events": [
+                    {
+                        "event_id": item.event_id,
+                        "kind": item.kind.value,
+                        "source_path": item.source_path,
+                        "target_path": item.target_path,
+                        "payload": item.payload,
+                        "metadata": item.metadata,
+                    }
+                    for item in events
+                ],
+                "current_node": {
+                    "path": self.path,
+                    "description": self._node_description,
+                    "prompt": self._node_prompt,
+                },
+            },
+            ensure_ascii=False,
+        )
+
     def _fallback_reply(self, event: EventEnvelope) -> str:
         if event.kind.value == "command":
             return f"{self.path} 已接收命令: {event.payload.get('text', '')}"
@@ -290,20 +523,122 @@ class AgentRuntime:
         return f"{self.path} 已处理事件: {json.dumps(event.payload, ensure_ascii=False)}"
 
     def _parse_agent_response(self, content: str) -> dict[str, str]:
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
+        parsed = self._parse_json_payload(content)
+        if parsed is None:
             return {"thought_summary": "模型未按 JSON 返回，直接采用文本输出。", "final_response": content}
-        if not isinstance(parsed, dict):
-            return {"thought_summary": "模型返回了非对象结构。", "final_response": content}
         return {
             "thought_summary": str(parsed.get("thought_summary", "")),
             "final_response": str(parsed.get("final_response", content)),
         }
 
+    def _parse_batch_agent_response(self, content: str, events: list[EventEnvelope]) -> dict[str, Any]:
+        parsed = self._parse_json_payload(content)
+        if parsed is None:
+            event_results = [self._build_text_event_result(event, content, "模型未按 JSON 返回，直接采用文本输出。") for event in events]
+            return {
+                "thought_summary": "模型未按 JSON 返回，直接采用文本输出。",
+                "final_response": content,
+                "event_results": event_results,
+            }
+        thought_summary = str(parsed.get("thought_summary", ""))
+        final_response = str(parsed.get("final_response", content))
+        raw_event_results = parsed.get("event_results")
+        normalized_event_results = self._normalize_batch_event_results(
+            raw_event_results=raw_event_results,
+            events=events,
+            default_thought_summary=thought_summary,
+            default_final_response=final_response,
+        )
+        return {
+            "thought_summary": thought_summary,
+            "final_response": final_response,
+            "event_results": normalized_event_results,
+        }
+
+    def _normalize_batch_event_results(
+        self,
+        *,
+        raw_event_results: Any,
+        events: list[EventEnvelope],
+        default_thought_summary: str,
+        default_final_response: str,
+    ) -> list[dict[str, Any]]:
+        results_by_id: dict[str, dict[str, Any]] = {}
+        if isinstance(raw_event_results, list):
+            for item in raw_event_results:
+                if not isinstance(item, dict):
+                    continue
+                event_id = str(item.get("event_id", "")).strip()
+                if not event_id:
+                    continue
+                results_by_id[event_id] = item
+        normalized: list[dict[str, Any]] = []
+        for event in events:
+            candidate = results_by_id.get(event.event_id)
+            if candidate is None:
+                normalized.append(self._build_text_event_result(event, default_final_response, default_thought_summary))
+                continue
+            normalized.append(
+                {
+                    "event_id": event.event_id,
+                    "thought_summary": str(candidate.get("thought_summary", default_thought_summary)),
+                    "final_response": str(candidate.get("final_response", default_final_response)),
+                    "kind": event.kind.value,
+                    "source_path": event.source_path,
+                    "target_path": self._reply_target(event),
+                }
+            )
+        return normalized
+
+    def _build_fallback_event_result(self, event: EventEnvelope) -> dict[str, Any]:
+        return self._build_text_event_result(event, self._fallback_reply(event), "未配置模型，使用规则回复。")
+
+    def _build_text_event_result(self, event: EventEnvelope, final_response: str, thought_summary: str) -> dict[str, Any]:
+        return {
+            "event_id": event.event_id,
+            "thought_summary": thought_summary,
+            "final_response": final_response,
+            "kind": event.kind.value,
+            "source_path": event.source_path,
+            "target_path": self._reply_target(event),
+        }
+
+    def _parse_json_payload(self, content: str) -> dict[str, Any] | None:
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+        fenced_json = self._extract_json_object_from_text(content)
+        if fenced_json is None:
+            return None
+        try:
+            parsed = json.loads(fenced_json)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def _extract_json_object_from_text(self, content: str) -> str | None:
+        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL | re.IGNORECASE)
+        if match:
+            return match.group(1)
+        return None
+
     def _thread_id_for_event(self, event: EventEnvelope) -> str:
         channel = f":{event.channel_id}" if event.channel_id else ""
         return f"{self.path}:{event.source_path}:{event.kind.value}{channel}"
+
+    def _thread_id_for_batch(self, events: list[EventEnvelope]) -> str:
+        if not events:
+            return f"{self.path}:empty-batch"
+        return f"{self.path}:batch:{events[0].kind.value}:{events[0].event_id}:{events[-1].event_id}"
+
+    def _agent_status_doc_path(self, path: str) -> str:
+        normalized = "/".join(part for part in path.strip("/").split("/") if part)
+        if not normalized:
+            return "/agent/root/STATUS.md"
+        return f"/agent/{normalized}/STATUS.md"
 
     def _load_node_context_sync(self) -> None:
         try:
@@ -357,6 +692,10 @@ class AgentRuntime:
             return
         event = self._active_event
         enriched = dict(payload)
+        if self._active_events:
+            enriched.setdefault("batch_event_ids", [item.event_id for item in self._active_events])
+            enriched.setdefault("batch_event_count", len(self._active_events))
+            enriched.setdefault("batch_queue_kind", self._active_events[0].kind.value)
         if event is not None:
             enriched.setdefault("trace_id", event.trace_id)
             enriched.setdefault("event_id", event.event_id)

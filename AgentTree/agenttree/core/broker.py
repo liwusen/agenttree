@@ -47,6 +47,32 @@ class EventBroker:
             self._agent_events[target].clear()
             return None
 
+    async def drain_next_batch(self, agent_path: str, batch_size: int) -> list[EventEnvelope]:
+        target = normalize_node_path(agent_path)
+        size = max(1, batch_size)
+        async with self._lock:
+            queues = self._queues[target]
+            selected_kind: EventKind | None = None
+            for kind in (EventKind.COMMAND, EventKind.MESSAGE, EventKind.STRUCT, EventKind.EMERGENCY, EventKind.EVENT):
+                if not queues[kind].empty():
+                    selected_kind = kind
+                    break
+            if selected_kind is None:
+                self._agent_events[target].clear()
+                return []
+
+            drained: list[EventEnvelope] = []
+            selected_queue = queues[selected_kind]
+            while len(drained) < size and not selected_queue.empty():
+                state = await selected_queue.get()
+                state.attempts += 1
+                self._pending_acks[target][state.event.event_id] = state
+                drained.append(state.event)
+
+            if all(queue.empty() for queue in queues.values()):
+                self._agent_events[target].clear()
+            return drained
+
     async def acknowledge(self, agent_path: str, event_id: str) -> bool:
         target = normalize_node_path(agent_path)
         async with self._lock:

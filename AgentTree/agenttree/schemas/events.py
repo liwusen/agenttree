@@ -24,6 +24,15 @@ class EventPriority(int, Enum):
     EVENT = 5
 
 
+class EventMessagePurpose(str, Enum):
+    INFO = "info"
+    REQUEST = "request"
+    ACK = "ack"
+    STATUS_UPDATE = "status_update"
+    ESCALATION = "escalation"
+    RESPONSE = "response"
+
+
 EVENT_PRIORITIES: dict[EventKind, EventPriority] = {
     EventKind.COMMAND: EventPriority.COMMAND,
     EventKind.MESSAGE: EventPriority.MESSAGE,
@@ -31,6 +40,23 @@ EVENT_PRIORITIES: dict[EventKind, EventPriority] = {
     EventKind.EMERGENCY: EventPriority.EMERGENCY,
     EventKind.EVENT: EventPriority.EVENT,
 }
+
+
+def build_event_metadata(
+    *,
+    metadata: dict[str, Any] | None = None,
+    require_reply: bool | None = None,
+    message_purpose: EventMessagePurpose | str | None = None,
+    dedupe_key: str | None = None,
+) -> dict[str, Any]:
+    payload = dict(metadata or {})
+    if require_reply is not None:
+        payload["require_reply"] = require_reply
+    if message_purpose is not None:
+        payload["message_purpose"] = message_purpose.value if isinstance(message_purpose, EventMessagePurpose) else str(message_purpose)
+    if dedupe_key:
+        payload["dedupe_key"] = dedupe_key
+    return payload
 
 
 class EventEnvelope(BaseModel):
@@ -66,15 +92,25 @@ class SendMessageRequest(BaseModel):
     target_path: str
     text: str
     channel_id: str | None = None
+    require_reply: bool | None = None
+    message_purpose: EventMessagePurpose | None = None
+    dedupe_key: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def to_event(self) -> EventEnvelope:
         payload = {"text": self.text}
+        default_require_reply = self.kind == EventKind.COMMAND if self.require_reply is None else self.require_reply
+        default_message_purpose = EventMessagePurpose.REQUEST if self.kind == EventKind.COMMAND else EventMessagePurpose.INFO
         return EventEnvelope(
             kind=self.kind,
             source_path=self.source_path,
             target_path=self.target_path,
             payload=payload,
             channel_id=self.channel_id,
-            metadata=self.metadata,
+            metadata=build_event_metadata(
+                metadata=self.metadata,
+                require_reply=default_require_reply,
+                message_purpose=self.message_purpose or default_message_purpose,
+                dedupe_key=self.dedupe_key,
+            ),
         )

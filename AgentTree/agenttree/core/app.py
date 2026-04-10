@@ -765,14 +765,34 @@ def create_app() -> FastAPI:
                     continue
 
                 if message.message_type == RuntimeMessageType.REQUEST_EVENT:
-                    event = await state.broker.drain_next(registered_path)
-                    if event is not None:
-                        await trace(registered_path, "event_dispatch", f"dispatching {event.kind.value}", {"event": event.model_dump(mode="json")})
+                    requested_batch_size = int(message.payload.get("batch_size", 1) or 1)
+                    if requested_batch_size > 1:
+                        events = await state.broker.drain_next_batch(registered_path, requested_batch_size)
+                    else:
+                        single_event = await state.broker.drain_next(registered_path)
+                        events = [single_event] if single_event is not None else []
+                    if events:
+                        trace_payload = {
+                            "event_count": len(events),
+                            "queue_kind": events[0].kind.value,
+                            "event_ids": [item.event_id for item in events],
+                        }
+                        if len(events) == 1:
+                            trace_payload["event"] = events[0].model_dump(mode="json")
+                            await trace(registered_path, "event_dispatch", f"dispatching {events[0].kind.value}", trace_payload)
+                        else:
+                            trace_payload["events"] = [item.model_dump(mode="json") for item in events]
+                            await trace(registered_path, "event_dispatch", f"dispatching batch of {len(events)} {events[0].kind.value} event(s)", trace_payload)
                     await websocket.send_text(
                         RuntimeMessage(
                             message_type=RuntimeMessageType.EVENT,
                             path=registered_path,
-                            event=event,
+                            event=events[0] if len(events) == 1 else None,
+                            events=events or None,
+                            payload={
+                                "batch_size": len(events),
+                                "queue_kind": events[0].kind.value if events else None,
+                            },
                         ).model_dump_json()
                     )
                     continue
